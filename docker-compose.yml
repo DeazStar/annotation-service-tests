@@ -1,0 +1,80 @@
+services:
+  annotation_service:
+    image: deazstar/annotation-service:latest
+    volumes:
+      # Inject ONLY the specific config file over the container's baked-in file
+      - ./config/config.yaml:/app/config/config.yaml
+    ports:
+      - "${APP_PORT}:${APP_PORT}"
+    command: gunicorn app.main:socket_app --workers 1 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:${APP_PORT}
+    restart: always
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    depends_on:
+      - mongodb
+      - redis
+    environment: &app_env
+      MONGO_URI: ${MONGO_URI}
+      APP_PORT: ${APP_PORT}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379/0
+      REDIS_URL_BROKER: redis://redis:6379/1
+      REDIS_EXPIRATION: 3600
+      FASTAPI_APP: "true"
+      MORK_URL: ${MORK_URL}
+
+  celery_worker:
+    image: deazstar/annotation-service:latest
+    volumes:
+      # Ensure the background worker also gets the exact same config file!
+      - ./config/config.yaml:/app/config/config.yaml
+    command: python -m celery -A app.workers.celery_app worker --loglevel=info --concurrency=20
+    restart: always
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    depends_on:
+      - annotation_service
+      - redis
+      - mongodb
+    environment:
+      <<: *app_env
+      C_FORCE_ROOT: "1"
+
+  mongodb:
+    image: mongo:latest
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "${MONGODB_DOCKER_PORT}:27017"
+    restart: always
+
+  redis:
+    image: redis:latest
+    ports:
+      - "6399:6379"
+    restart: always
+    volumes:
+      - redis_data:/data
+
+  caddy:
+    image: caddy:latest
+    ports:
+      - "${CADDY_PORT}:${CADDY_PORT_FORWARD}"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    command: caddy reverse-proxy --from http://0.0.0.0:${CADDY_PORT} --to http://annotation_service:${APP_PORT}
+    restart: always
+    depends_on:
+      - annotation_service
+
+volumes:
+  mongo_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
